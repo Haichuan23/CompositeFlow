@@ -24,7 +24,7 @@ mkdir -p ${BASE_DIR}/training_output
 # --- Grid Values ---
 ALGORITHMS=("vflow")
 SRCTYPES=("medium-replay" "medium" "medium-expert")
-ENVS=("walker2d-friction" "hopper-friction")
+ENVS=("hopper-friction")
 SEEDS=(0 1 2)
 
 DGS=(0.01 0.1)                            # dynamics_gap_reward_scale values
