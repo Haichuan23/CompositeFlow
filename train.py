@@ -98,7 +98,6 @@ if __name__ == "__main__":
     parser.add_argument('--srctype', default="medium", help='Dataset type for offline source domain (e.g., medium, expert)')
     parser.add_argument('--tartype', default="medium", help='Dataset type for offline target domain (e.g., random, medium)')
     parser.add_argument('--shift_level', default=0.5, help='Scale/type of dynamics shift')
-    parser.add_argument('--mode', default=0, type=int, help='Training mode: 0: online-online, 1: offline-online, 2: online-offline, 3: offline-offline')
     parser.add_argument("--seed", default=0, type=int, help="Random seed")
     parser.add_argument('--tar_env_interact_interval', default=10, type=int, help='Interaction frequency with target env (Modes 0, 1)')
     parser.add_argument('--max_step', default=int(4e5), type=int, help="Max *gradient steps*")
@@ -186,10 +185,8 @@ if __name__ == "__main__":
     tar_env, tar_eval_env = None, None
     src_d4rl_name = None # Initialize
 
-    # Source Env/Dataset Setup
-    if args.mode == 1 or args.mode == 3: # Offline source
-        if domain == "mujoco":
-             src_d4rl_name = f"{src_env_name_base}-{args.srctype}-v2"
+    if domain == "mujoco":
+        src_d4rl_name = f"{src_env_name_base}-{args.srctype}-v2"
         print(f"Using D4RL source dataset: {src_d4rl_name}")
         try:
             src_eval_env = gym.make(src_d4rl_name)
@@ -200,40 +197,18 @@ if __name__ == "__main__":
             src_eval_env = None # Ensure it's None
             # exit(1) # Optional: Exit if env is strictly needed
         src_env = None
-    else: # Online source
-        src_env_config = {'env_name': src_env_name_base, 'shift_level': args.shift_level}
-        try:
-            src_env = call_env[domain](src_env_config)
-            src_env.seed(args.seed)
-            src_eval_env = call_env[domain](src_env_config)
-            src_eval_env.seed(args.seed + 100)
-            print(f"Using online source environment: {src_env_name_base} with shift {args.shift_level}")
-        except Exception as e:
-             print(f"[Error] Could not create online source environment {src_env_name_base}: {e}")
-             exit(1)
 
     # Target Env/Dataset Setup
     tar_env_config = {'env_name': tar_env_name, 'shift_level': args.shift_level, "extreme_shift": args.extreme_shift}
     try:
-        if args.mode == 2 or args.mode == 3: # Offline target
-            print(f"Using offline target dataset: {tar_env_name} type {args.tartype}")
-            # Need an eval env instance even if using offline data
-            tar_eval_env = call_env[domain](tar_env_config)
-            tar_eval_env.seed(args.seed + 100)
-            tar_env = None # No online interaction with target
-        else: # Online target
-            print(f"Using online target environment: {tar_env_name} with shift {args.shift_level}, Extreme Shisft Status:{args.extreme_shift}")
-            tar_env = call_env[domain](tar_env_config)
-            tar_env.seed(args.seed)
-            tar_eval_env = call_env[domain](tar_env_config)
-            tar_eval_env.seed(args.seed + 100)
+        print(f"Using online target environment: {tar_env_name} with shift {args.shift_level}, Extreme Shisft Status:{args.extreme_shift}")
+        tar_env = call_env[domain](tar_env_config)
+        tar_env.seed(args.seed)
+        tar_eval_env = call_env[domain](tar_env_config)
+        tar_eval_env.seed(args.seed + 100)
     except Exception as e:
             print(f"[Error] Could not create target environment/dataset {tar_env_name}: {e}")
             exit(1)
-
-
-    if args.mode not in [0, 1, 2, 3]:
-        raise NotImplementedError(f"Mode {args.mode} is not supported.")
 
     # --- Load Configuration ---
     policy_config_name = args.policy.lower()
@@ -317,7 +292,6 @@ if __name__ == "__main__":
         'shift_level': args.shift_level, # Keep original shift level value
         'extreme_shift': args.extreme_shift,
         'seed': args.seed,
-        'mode': args.mode,
         'policy': args.policy,
         'device': device,
         # Extract everything after first '-' to handle both cases:
@@ -341,8 +315,8 @@ if __name__ == "__main__":
 
     # Construct descriptive directory name
     run_name_parts = [args.policy, args.env]
-    if args.mode == 1 or args.mode == 3: run_name_parts.append(f"src_{args.srctype}")
-    if args.mode == 2 or args.mode == 3: run_name_parts.append(f"tar_{args.tartype}")
+    run_name_parts.append(f"src_{args.srctype}")
+
     run_name_parts.append(f"sl_{args.shift_level}")
     if args.extreme_shift:
         run_name_parts.append("extreme") 
@@ -352,13 +326,9 @@ if __name__ == "__main__":
 
     # Use the directory provided by --dir argument
     outdir = os.path.join(args.dir, run_name)
-    # models_dir = os.path.join(outdir, "models")
-    # buffers_dir = os.path.join(outdir, "buffers")
     tb_dir = os.path.join(outdir, "tb")
 
     print(f"Output directory: {outdir}")
-    # os.makedirs(models_dir, exist_ok=True)
-    # os.makedirs(buffers_dir, exist_ok=True)
     os.makedirs(tb_dir, exist_ok=True)
 
     writer = SummaryWriter(tb_dir)
@@ -380,7 +350,7 @@ if __name__ == "__main__":
         with open(os.path.join(outdir, 'log.txt'), 'w') as f:
             f.write(f'Run Name: {run_name}\n')
             f.write(f'Command: python {" ".join(sys.argv)}\n\n') # Record command
-            f.write(f'Policy: {args.policy}; Env: {args.env}; Seed: {args.seed}; Mode: {args.mode}\n\n')
+            f.write(f'Policy: {args.policy}; Env: {args.env}; Seed: {args.seed}\n\n')
             f.write('--- Configuration ---\n')
             # Sort config items for consistent logging
             for key, value in sorted(config.items()):
@@ -397,9 +367,9 @@ if __name__ == "__main__":
 
     # --- Initialize Policy ---
     try:
-        policy = call_algo(args.policy, config, args.mode, device) # Pass full config
+        policy = call_algo(args.policy, config, device) # Pass full config
     except Exception as e:
-        print(f"[Error] Failed to initialize policy '{args.policy}': {e}")
+        print(f"Line 428: [Error] Failed to initialize policy '{args.policy}': {e}")
         exit(1)
 
     # --- Initialize Replay Buffers ---
@@ -436,38 +406,36 @@ if __name__ == "__main__":
         
         print("Weights & Biases initialized successfully.")
     except Exception as e:
-        print(f"[Error] Failed to initialize Weights & Biases: {e}")
+        print(f"Line 465: [Error] Failed to initialize Weights & Biases: {e}")
         print("[Warning] Wandb logging disabled.")
         # wandb_instance remains None
 
 
     # --- Load Offline Datasets ---
-    # Source dataset (Modes 1, 3)
-    if args.mode == 1:
-        # Ensure src_eval_env exists and src_d4rl_name is set
-        if src_eval_env and src_d4rl_name:
-            try:
-                print(f"Loading source D4RL dataset: {src_d4rl_name}")
-                d4rl_dataset = d4rl.qlearning_dataset(src_eval_env)
-                # Load data into the buffer (already on the correct device)
-                src_replay_buffer.convert_D4RL(d4rl_dataset)
-                if 'antmaze' in args.env:
-                    print("Adjusting Antmaze rewards (-1.0)")
-                    src_replay_buffer.reward -= 1.0
-                print(f"Loaded {src_replay_buffer.size} transitions into source buffer.")
-                # Optional downsampling
-                if args.downsample_src < 1.0:
-                     src_replay_buffer.downsample(args.downsample_src)
-                     print(f"Downsampled source buffer to {src_replay_buffer.size} transitions.")
-            except Exception as e:
-                 print(f"[Error] Failed to load or process D4RL source dataset {src_d4rl_name}: {e}")
-                 # exit(1) # Decide whether to exit
-        else:
-            print("[Error] Source eval env or D4RL name not available for offline loading (Mode 1 or 3).")
-            # exit(1)
-    else:
-        raise NotImplementedError(f"The mode '{args.mode}' is not implemented yet in call_algo().")
+    # Source dataset 
 
+    # Ensure src_eval_env exists and src_d4rl_name is set
+    if src_eval_env and src_d4rl_name:
+        try:
+            print(f"Loading source D4RL dataset: {src_d4rl_name}")
+            d4rl_dataset = d4rl.qlearning_dataset(src_eval_env)
+            # Load data into the buffer (already on the correct device)
+            src_replay_buffer.convert_D4RL(d4rl_dataset)
+            if 'antmaze' in args.env:
+                print("Adjusting Antmaze rewards (-1.0)")
+                src_replay_buffer.reward -= 1.0
+            print(f"Loaded {src_replay_buffer.size} transitions into source buffer.")
+            # Optional downsampling
+            if args.downsample_src < 1.0:
+                    src_replay_buffer.downsample(args.downsample_src)
+                    print(f"Downsampled source buffer to {src_replay_buffer.size} transitions.")
+        except Exception as e:
+                print(f"[Error] Failed to load or process D4RL source dataset {src_d4rl_name}: {e}")
+                # exit(1) # Decide whether to exit
+        else:
+            print("[Error] Source eval env or D4RL name not available for offline loading.")
+            # exit(1)
+   
     # --- Initial Policy Evaluation ---
     eval_cnt = 0
     # Only evaluate if not resuming from a later step, or always evaluate?
@@ -497,83 +465,79 @@ if __name__ == "__main__":
     batch_size = int(config['batch_size'])
 
     print(f"Starting training loop from step {start_step} up to {max_steps}")
-    print(f"Using Mode: {args.mode}")
 
     # ================== MODE 1: Offline-Online ==================
-    if args.mode == 1:
-        if not tar_env:
-            print("[Error] Mode 1 requires an online target environment.")
-            exit(1)
-        tar_state, tar_done = tar_env.reset(), False
-        tar_episode_reward, tar_episode_timesteps, tar_episode_num = 0, 0, 0
 
-        print(f"Starting/Resuming Mode 1 training loop from step {start_step}...")
-        for t in range(start_step, max_steps):
+    if not tar_env:
+        print("[Error] Mode 1 requires an online target environment.")
+        exit(1)
+    tar_state, tar_done = tar_env.reset(), False
+    tar_episode_reward, tar_episode_timesteps, tar_episode_num = 0, 0, 0
 
-            # --- CHECK FOR EXIT SIGNAL ---
-            if graceful_exit_request:
-                print(f"INFO: Graceful exit requested at step {t}. Saving final state (Mode 1)...")
-                print("INFO: --save-model not specified, skipping final save.")
-                print("INFO: Closing resources...")
-                writer.close()
-                if wandb_instance: wandb_instance.finish(exit_code=99)
-                print("INFO: Exiting gracefully with code 99.")
-                sys.exit(99)
-            # --- END OF EXIT SIGNAL CHECK ---
+    print(f"Starting/Resuming Mode 1 training loop from step {start_step}...")
+    for t in range(start_step, max_steps):
 
-             # --- Target Env Interaction (Periodic based on gradient steps) ---
-            if t % config['tar_env_interact_interval'] == 0:
-                tar_episode_timesteps += 1
-                tar_action = policy.select_action(np.array(tar_state), test=False)
-                tar_next_state, tar_reward, tar_done, tar_info = tar_env.step(tar_action)
-                tar_real_done = tar_done and not tar_info.get('TimeLimit.truncated', False)
-                tar_done_bool = float(tar_real_done)
-                if 'antmaze' in args.env: tar_reward -= 1.0
-                tar_replay_buffer.add(tar_state, tar_action, tar_next_state, tar_reward, tar_done_bool)
-                tar_state = tar_next_state
-                tar_episode_reward += tar_reward
+        # --- CHECK FOR EXIT SIGNAL ---
+        if graceful_exit_request:
+            print(f"INFO: Graceful exit requested at step {t}. Saving final state (Mode 1)...")
+            print("INFO: --save-model not specified, skipping final save.")
+            print("INFO: Closing resources...")
+            writer.close()
+            if wandb_instance: wandb_instance.finish(exit_code=99)
+            print("INFO: Exiting gracefully with code 99.")
+            sys.exit(99)
+        # --- END OF EXIT SIGNAL CHECK ---
 
-                if tar_done:
-                    print(f"Step: {t+1}/{max_steps} | Tar Ep Num: {tar_episode_num+1} | Ep Steps: {tar_episode_timesteps} | Reward: {tar_episode_reward:.2f}")
-                    train_normalized_score = get_normalized_score(tar_episode_reward, ref_env_name)
-                    writer.add_scalar('train/target_return', tar_episode_reward, global_step=t+1)
-                    writer.add_scalar('train/target_normalized_score', train_normalized_score, global_step=t+1)
-                    if wandb_instance: wandb_instance.log({
-                        'train/target_return': tar_episode_reward,
-                        'train/target_normalized_score': train_normalized_score,
-                    }, step=t+1)
-                    tar_state, tar_done = tar_env.reset(), False
-                    tar_episode_reward = 0
-                    tar_episode_timesteps = 0
-                    tar_episode_num += 1
+            # --- Target Env Interaction (Periodic based on gradient steps) ---
+        if t % config['tar_env_interact_interval'] == 0:
+            tar_episode_timesteps += 1
+            tar_action = policy.select_action(np.array(tar_state), test=False)
+            tar_next_state, tar_reward, tar_done, tar_info = tar_env.step(tar_action)
+            tar_real_done = tar_done and not tar_info.get('TimeLimit.truncated', False)
+            tar_done_bool = float(tar_real_done)
+            if 'antmaze' in args.env: tar_reward -= 1.0
+            tar_replay_buffer.add(tar_state, tar_action, tar_next_state, tar_reward, tar_done_bool)
+            tar_state = tar_next_state
+            tar_episode_reward += tar_reward
 
-            # --- Policy Training ---
-            # Train if either buffer has enough samples (src is static, tar fills up)
-           
-            policy.train(src_replay_buffer, tar_replay_buffer, batch_size, writer)
+            if tar_done:
+                print(f"Step: {t+1}/{max_steps} | Tar Ep Num: {tar_episode_num+1} | Ep Steps: {tar_episode_timesteps} | Reward: {tar_episode_reward:.2f}")
+                train_normalized_score = get_normalized_score(tar_episode_reward, ref_env_name)
+                writer.add_scalar('train/target_return', tar_episode_reward, global_step=t+1)
+                writer.add_scalar('train/target_normalized_score', train_normalized_score, global_step=t+1)
+                if wandb_instance: wandb_instance.log({
+                    'train/target_return': tar_episode_reward,
+                    'train/target_normalized_score': train_normalized_score,
+                }, step=t+1)
+                tar_state, tar_done = tar_env.reset(), False
+                tar_episode_reward = 0
+                tar_episode_timesteps = 0
+                tar_episode_num += 1
 
-            # --- Evaluation and Periodic Checkpointing ---
-            if (t + 1) % eval_freq == 0:
-                if tar_eval_env:
-                    tar_eval_return = eval_policy(policy, tar_eval_env, eval_cnt=f"Step{t+1}-Tar")
-                    eval_normalized_score = get_normalized_score(tar_eval_return, ref_env_name)
-                    writer.add_scalar('eval/target_return', tar_eval_return, global_step=t+1)
-                    writer.add_scalar('eval/target_normalized_score', eval_normalized_score, global_step=t+1)
-                    if wandb_instance: wandb_instance.log({
-                        'test/target_return': tar_eval_return,
-                        'test/target_normalized_score': eval_normalized_score,
-                    }, step=t+1)    
+        # --- Policy Training ---
+        # Train if either buffer has enough samples (src is static, tar fills up)
+        
+        policy.train(src_replay_buffer, tar_replay_buffer, batch_size, writer)
 
-                if (t + 1) == 400000:
-                    tar_eval_return = eval_policy(policy, tar_eval_env, eval_cnt=f"Step{t+1}-Tar")
-                    eval_normalized_score = get_normalized_score(tar_eval_return, ref_env_name)
-                    if wandb_instance: wandb_instance.log({
-                        'test/target_return_400K': tar_eval_return,
-                        'test/target_normalized_score_400K': eval_normalized_score,
-                    })    
-    else:
-        raise NotImplementedError(f"The mode '{args.mode}' is not implemented yet in call_algo().")
+        # --- Evaluation and Periodic Checkpointing ---
+        if (t + 1) % eval_freq == 0:
+            if tar_eval_env:
+                tar_eval_return = eval_policy(policy, tar_eval_env, eval_cnt=f"Step{t+1}-Tar")
+                eval_normalized_score = get_normalized_score(tar_eval_return, ref_env_name)
+                writer.add_scalar('eval/target_return', tar_eval_return, global_step=t+1)
+                writer.add_scalar('eval/target_normalized_score', eval_normalized_score, global_step=t+1)
+                if wandb_instance: wandb_instance.log({
+                    'test/target_return': tar_eval_return,
+                    'test/target_normalized_score': eval_normalized_score,
+                }, step=t+1)    
 
+            if (t + 1) == 400000:
+                tar_eval_return = eval_policy(policy, tar_eval_env, eval_cnt=f"Step{t+1}-Tar")
+                eval_normalized_score = get_normalized_score(tar_eval_return, ref_env_name)
+                if wandb_instance: wandb_instance.log({
+                    'test/target_return_400K': tar_eval_return,
+                    'test/target_normalized_score_400K': eval_normalized_score,
+                })    
 
     # --- Normal Finish ---
     print("="*40)
