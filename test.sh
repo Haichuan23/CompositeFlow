@@ -75,7 +75,6 @@ python train.py \
     --shift_level 5.0 \
     --seed ${SEED} \
     --n_samples 30 \
-    --checkpoint_freq 5000 \
     --dynamics_gap_reward_scale ${DYNAMICS_GAP} \
     --filter_percent ${FILTER} \
     --dir ${OUTPUT_DIR} \

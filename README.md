@@ -6,7 +6,8 @@
   <a href="Python 3.8"><img alt="Python 3.8" src="https://img.shields.io/badge/python-3.8-blue.svg" /></a>
 </p>
 
-![A brief overview of the Composite Flow Framework.](./imgs/ODRLbenchmark.png)
+<!-- ![A brief overview of the Composite Flow Framework.](./imgs/compositeflow.png) -->
+
 🔥 [Composite Flow Matching for Reinforcement Learning with Shifted-Dynamics Data](https://arxiv.org/abs/2505.23062)
 
 CompositeFlow adapts RL agents to dynamics shift by composing flow matching models for source and target MDPs and guiding exploration with learned dynamics gaps.

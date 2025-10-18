@@ -18,8 +18,6 @@ from pathlib import Path
 from algo.call_algo import call_algo # Assumed correct
 from dataset.call_dataset import call_tar_dataset # Assumed correct
 from envs.mujoco.call_mujoco_env import call_mujoco_env # Assumed correct
-from envs.adroit.call_adroit_env import call_adroit_env # Assumed correct
-from envs.antmaze.call_antmaze_env import call_antmaze_env # Assumed correct
 from envs.infos import get_normalized_score # Assumed correct
 # --- End of potentially custom imports ---
 from tensorboardX import SummaryWriter
@@ -167,30 +165,19 @@ if __name__ == "__main__":
     print(f"Domain detected: {domain}")
 
     call_env = {
-        'mujoco': call_mujoco_env,
-        'adroit': call_adroit_env,
-        'antmaze': call_antmaze_env,
+        'mujoco': call_mujoco_env
     }
 
     # Determine source and target environment configurations
     ref_env_name = args.env + '-' + str(args.shift_level)  # For normalization scores
 
-    if domain == 'antmaze':
-        # Antmaze names are often like 'antmaze-medium-play-v0'
-        src_env_name_base = args.env.split('-')[0] + '-' + args.env.split('-')[1] # e.g., antmaze-medium
-        src_env_config_name = src_env_name_base # Used for loading yaml config
-        src_env_config_name = src_env_name_base + '-' + args.srctype 
-        tar_env_name = args.env # Full name like antmaze-medium-play-v0
-    elif domain == 'adroit':
-        # Adroit names like 'pen-human-v0'
-        src_env_name_base = args.env.split('-')[0] # e.g., pen
-        src_env_config_name = src_env_name_base + '-' + args.srctype
-        tar_env_name = args.env
-    else: # mujoco
+    if domain == 'mujoco':
         # Mujoco names like 'hopper-friction'
         src_env_name_base = args.env.split('-')[0] # e.g., hopper
         src_env_config_name = src_env_name_base + '-' + args.srctype + '-v2'
         tar_env_name = args.env # Full name like hopper-friction
+    else:
+        print(f"[Error] Domain {domain} not supported in this script.")
 
     print(f"Source Env Base: {src_env_name_base}, Target Env Name: {tar_env_name}, Config Name: {src_env_config_name}")
 
@@ -201,11 +188,7 @@ if __name__ == "__main__":
 
     # Source Env/Dataset Setup
     if args.mode == 1 or args.mode == 3: # Offline source
-        if domain == 'antmaze':
-             src_d4rl_name = args.env # Assumes arg provides full D4RL name
-        elif domain == 'adroit':
-            src_d4rl_name = f"{src_env_name_base}-{args.srctype}-v0"
-        else: # mujoco
+        if domain == "mujoco":
              src_d4rl_name = f"{src_env_name_base}-{args.srctype}-v2"
         print(f"Using D4RL source dataset: {src_d4rl_name}")
         try:
