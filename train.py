@@ -466,7 +466,7 @@ if __name__ == "__main__":
             print("[Error] Source eval env or D4RL name not available for offline loading (Mode 1 or 3).")
             # exit(1)
     else:
-        print(f"[Error] Invalid training mode specified: {args.mode}")
+        raise NotImplementedError(f"The mode '{args.mode}' is not implemented yet in call_algo().")
 
     # --- Initial Policy Evaluation ---
     eval_cnt = 0
@@ -572,7 +572,7 @@ if __name__ == "__main__":
                         'test/target_normalized_score_400K': eval_normalized_score,
                     })    
     else:
-         print(f"[Error] Invalid training mode specified: {args.mode}")
+        raise NotImplementedError(f"The mode '{args.mode}' is not implemented yet in call_algo().")
 
 
     # --- Normal Finish ---
