@@ -1,0 +1,456 @@
+import copy
+import math
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.distributions import Normal, TransformedDistribution, constraints
+from torch.distributions.transforms import Transform
+from .guided_flow.flow_matching import FlowMatching
+import wandb
+import json
+
+def extend_and_repeat(tensor: torch.Tensor, dim: int, repeat: int) -> torch.Tensor:
+    return tensor.unsqueeze(dim).repeat_interleave(repeat, dim=dim)
+
+class Scalar(nn.Module):
+    def __init__(self, init_value: float):
+        super().__init__()
+        self.constant = nn.Parameter(torch.tensor(init_value, dtype=torch.float32))
+
+    def forward(self) -> nn.Parameter:
+        return self.constant
+
+class TanhTransform(Transform):
+    r"""
+    Transform via the mapping :math:`y = \tanh(x)`.
+    It is equivalent to
+    ```
+    ComposeTransform([AffineTransform(0., 2.), SigmoidTransform(), AffineTransform(-1., 2.)])
+    ```
+    However this might not be numerically stable, thus it is recommended to use `TanhTransform`
+    instead.
+    Note that one should use `cache_size=1` when it comes to `NaN/Inf` values.
+    """
+    domain = constraints.real
+    codomain = constraints.interval(-1.0, 1.0)
+    bijective = True
+    sign = +1
+
+    @staticmethod
+    def atanh(x):
+        return 0.5 * (x.log1p() - (-x).log1p())
+
+    def __eq__(self, other):
+        return isinstance(other, TanhTransform)
+
+    def _call(self, x):
+        return x.tanh()
+
+    def _inverse(self, y):
+        # We do not clamp to the boundary here as it may degrade the performance of certain algorithms.
+        # one should use `cache_size=1` instead
+        return self.atanh(y)
+
+    def log_abs_det_jacobian(self, x, y):
+        # We use a formula that is more numerically stable, see details in the following link
+        # https://github.com/tensorflow/probability/blob/master/tensorflow_probability/python/bijectors/tanh.py#L69-L80
+        return 2. * (math.log(2.) - x - F.softplus(-2. * x))
+
+
+class MLPNetwork(nn.Module):
+    
+    def __init__(self, input_dim, output_dim, hidden_size=256):
+        super(MLPNetwork, self).__init__()
+        self.network = nn.Sequential(
+                        nn.Linear(input_dim, hidden_size),
+                        nn.ReLU(),
+                        nn.Linear(hidden_size, hidden_size),
+                        nn.ReLU(),
+                        nn.Linear(hidden_size, output_dim),
+                        )
+    
+    def forward(self, x):
+        return self.network(x)
+
+
+class Policy(nn.Module):
+
+    def __init__(self, state_dim, action_dim, max_action, 
+                log_std_multiplier = 1.0,  
+                log_std_offset = -1.0,
+                hidden_size=256):
+        super(Policy, self).__init__()
+        self.action_dim = action_dim
+        self.max_action = max_action
+        self.network = MLPNetwork(state_dim, action_dim * 2, hidden_size)
+        #self.log_std_multiplier = Scalar(log_std_multiplier)
+        #self.log_std_offset = Scalar(log_std_offset)
+
+
+    def forward(self, x, get_logprob=False,  repeat=None):
+        #x = x + 0.0  # <--- force -0.0 to 0.0
+        #print(f"The shape of x is {x.shape}")
+        if repeat is not None:
+            x = extend_and_repeat(x, 1, repeat)
+        #print(f"The shape of x after extend_and_repeat is {x.shape}")
+        # print(f"The shape of x is {s.shape}")
+        mu_logstd = self.network(x)
+        mu, logstd = mu_logstd.chunk(2, dim=-1)
+        #logstd = self.log_std_multiplier() * logstd + self.log_std_offset()
+
+        #mu = torch.clamp(mu, min=-1e6, max=1e6)
+        logstd = torch.clamp(logstd, -20, 2)
+        #print('logstd: ', logstd)
+        std = logstd.exp()
+        #std = torch.clamp(std, min=1e-6)
+        #print('std: ', std)
+        dist = Normal(mu, std)
+        transforms = [TanhTransform(cache_size=1)]
+        dist = TransformedDistribution(dist, transforms)
+        action = dist.rsample()
+        if get_logprob:
+            logprob = dist.log_prob(action).sum(axis=-1, keepdim=True)
+        else:
+            logprob = None
+        mean = torch.tanh(mu)
+        
+        return action * self.max_action, logprob, mean * self.max_action
+
+class DoubleQFunc(nn.Module):
+    
+    def __init__(self, state_dim, action_dim, hidden_size=256):
+        super(DoubleQFunc, self).__init__()
+        self.network1 = MLPNetwork(state_dim + action_dim, 1, hidden_size)
+        self.network2 = MLPNetwork(state_dim + action_dim, 1, hidden_size)
+
+    def forward(self, state, action):
+        multiple_actions = False
+        batch_size = state.shape[0]
+        if action.ndim == 3 and state.ndim == 2:
+            multiple_actions = True
+            state = extend_and_repeat(state, 1, action.shape[1]).reshape(
+                -1, state.shape[-1]
+            )
+            action = action.reshape(-1, action.shape[-1])
+        x = torch.cat([state, action], dim=-1)
+        q1 = torch.squeeze(self.network1(x), dim=-1)
+        q2 = torch.squeeze(self.network2(x), dim=-1)
+        if multiple_actions:
+            q1 = q1.reshape(batch_size, -1)
+            q2 = q2.reshape(batch_size, -1)
+        return q1, q2
+
+
+class VFlowPolicy(object):
+
+    def __init__(self,
+                 config,
+                 device,
+                 target_entropy=None,
+                 ):
+        self.config=  config
+        self.device = device
+        self.discount = config['gamma']
+        self.tau = config['tau']
+        self.target_entropy = target_entropy if target_entropy else -config['action_dim']
+        self.update_interval = config['update_interval']
+        self.start_gate_src_sample = config['start_gate_src_sample']
+
+        self.total_it = 0
+        self.dynamics_train_freq = config['dynamics_train_freq']
+        self.upsample_src = config['upsample_src']
+        # self.dynamics_train_start = config['dynamics_train_start']
+
+        self.dynamics_model = FlowMatching(config, device)
+        # aka critic
+        self.q_funcs = DoubleQFunc(config['state_dim'], config['action_dim'], hidden_size=config['hidden_sizes']).to(self.device)
+        self.target_q_funcs = copy.deepcopy(self.q_funcs)
+        self.target_q_funcs.eval()
+        for p in self.target_q_funcs.parameters():
+            p.requires_grad = False
+
+        # aka actor
+        self.policy = Policy(config['state_dim'], config['action_dim'], config['max_action'], hidden_size=config['hidden_sizes']).to(self.device)
+
+        # aka temperature
+        if config['temperature_opt']:
+            self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
+        else:
+            self.log_alpha = torch.log(torch.FloatTensor([self.config['alpha']])).to(self.device)
+
+        self.q_optimizer = torch.optim.Adam(self.q_funcs.parameters(), lr=config['critic_lr'])
+        self.policy_optimizer = torch.optim.Adam(self.policy.parameters(), lr=config['actor_lr'])
+        self.temp_optimizer = torch.optim.Adam([self.log_alpha], lr=config['actor_lr'])
+    
+    def select_action(self, state, test=True):
+        with torch.no_grad():
+            action, _, mean = self.policy(torch.Tensor(state).view(1,-1).to(self.device))
+        if test:
+            return mean.squeeze().cpu().numpy()
+        else:
+            return action.squeeze().cpu().numpy()
+
+    def update_target(self):
+        """moving average update of target networks"""
+        with torch.no_grad():
+            for target_q_param, q_param in zip(self.target_q_funcs.parameters(), self.q_funcs.parameters()):
+                target_q_param.data.copy_(self.tau * q_param.data + (1.0 - self.tau) * target_q_param.data)
+    
+    def update_q_functions(self, state_batch, action_batch, reward_batch, nextstate_batch, not_done_batch, writer=None):
+        with torch.no_grad():
+            # if self.config['dynamics_gap_reward_scale'] != 0:
+            #     wandb.log({
+            #         'train/q_reward_batch': reward_batch.mean(),
+            #         'train/q_dynamics_gap_region_level': self.dynamics_gap_region_level.mean(),
+            #     }, step=self.total_it)
+            # ##modify reward accroding to dynamics gap
+            if self.total_it >= self.start_gate_src_sample:
+                if self.config['dynamics_gap_reward_scale'] != 0:
+                    reward_batch = reward_batch + self.config['dynamics_gap_reward_scale'] * self.dynamics_gap.unsqueeze(1)
+                
+            
+            # # print(f"The shape of nextstate_batch is {nextstate_batch}")
+            
+            
+            nextaction_batch, logprobs_batch, _ = self.policy(nextstate_batch, get_logprob=True)
+            q_t1, q_t2 = self.target_q_funcs(nextstate_batch, nextaction_batch)
+            # take min to mitigate positive bias in q-function training
+            q_target = torch.min(q_t1, q_t2)
+            if self.config['backup_entropy']:
+                value_target = reward_batch.squeeze() + not_done_batch.squeeze() * self.discount * (q_target.squeeze() - self.alpha * logprobs_batch.squeeze())
+            else:
+                value_target = reward_batch.squeeze() + not_done_batch.squeeze() * self.discount * q_target.squeeze()
+            # value_target = reward_batch + not_done_batch * self.discount * q_target
+
+
+        q_1, q_2 = self.q_funcs(state_batch, action_batch)
+        if writer is not None and self.total_it % 5000 == 0:
+            writer.add_scalar('train/q1', q_1.mean(), self.total_it)
+            writer.add_scalar('train/logprob', logprobs_batch.mean(), self.total_it)
+            # wandb.log({
+            #     'train/q1': q_1.mean(),
+            #     'train/logprob': logprobs_batch.mean()
+            # }, step=self.total_it)
+        ## src always in front of tar
+        if state_batch.shape[0] == self.weight.shape[0]:
+            weight_temp = self.weight
+        else:
+            ### [src, tar] --> [tar], take the last part of the weight (length = state_batch.shape[0])
+            weight_temp = self.weight[-state_batch.shape[0]:]
+            #print(f"The weight_temp is {weight_temp}")
+
+        #print(f"loss shape: {F.mse_loss(q_1, value_target, reduction='none').shape}")
+        if self.config['use_weight']:
+            loss = weight_temp * F.mse_loss(q_1, value_target, reduction='none') + weight_temp * F.mse_loss(q_2, value_target, reduction='none')
+        else:
+            # print(f"The shape of q_1 is {q_1.shape}")
+            # print(f"The shape of value_target is {value_target.shape}")
+            # print(f"The shape of q_2 is {q_2.shape}")
+            loss = F.mse_loss(q_1, value_target, reduction='none') + F.mse_loss(q_2, value_target, reduction='none')
+        
+        loss = loss.mean()
+        return loss
+
+
+    def update_policy_and_temp(self, state_batch, src_state_batch, src_action_batch):
+        action_batch, logprobs_batch, _ = self.policy(state_batch, get_logprob=True)
+        q_b1, q_b2 = self.q_funcs(state_batch, action_batch)
+        qval_batch = torch.min(q_b1, q_b2)
+        policy_loss = (self.alpha * logprobs_batch - qval_batch).mean()
+        temp_loss = -self.alpha * (logprobs_batch.detach() + self.target_entropy).mean()
+        
+        p_w = self.config['weight'] / qval_batch.abs().mean().detach()
+        pred_src_act, _, _ = self.policy(src_state_batch, get_logprob=True)
+
+        policy_loss = p_w * (self.alpha * logprobs_batch - qval_batch).mean() + F.mse_loss(pred_src_act, src_action_batch)
+        temp_loss = -self.alpha * (logprobs_batch.detach() + self.target_entropy).mean()
+        
+        
+        return policy_loss, temp_loss
+
+
+    def pretrain_source_flow(self, src_replay_buffer, batch_size):
+        #s, a, ns, r, d = self.src_replay_buffer.sample(src_replay_buffer.size)
+        # need to reset up the config
+        print(f"Training Source Flow Matching")
+        self.dynamics_model.train_source_flow_matching(src_replay_buffer, holdout_ratio=self.config['flow_matching_holdout_ratio'], n_epochs=self.config['flow_matching_training_max_epochs_source'], batch_size=self.config['flow_matching_batch_size'], lr=self.config['flow_matching_lr'])
+
+        print(f"Flow Matching: Dynamic Model Finish Training")
+        return
+    
+    def train_adaptation_flow(self, src_replay_buffer, tar_replay_buffer, batch_size):
+        ## Need to change number of epochs back
+        self.dynamics_model.train_adaptation_flow_matching(tar_replay_buffer, holdout_ratio=self.config['flow_matching_holdout_ratio'], n_epochs=self.config['flow_matching_training_max_epochs_adaptation'], batch_size=self.config['flow_matching_batch_size'], lr=self.config['flow_matching_lr'])
+        print(f"Flow Matching: Target Dynamic Model Finish Training")
+        return
+    
+
+    def train(self, src_replay_buffer, tar_replay_buffer, batch_size=128, writer=None):
+        
+        if self.total_it == 0:
+            self.pretrain_source_flow(src_replay_buffer, batch_size)
+        
+        self.total_it += 1
+
+        # if self.total_it < self.start_gate_src_sample:
+        #     return
+        
+        if self.total_it % self.dynamics_train_freq == 0 and self.total_it >= self.start_gate_src_sample:
+            self.train_adaptation_flow(src_replay_buffer, tar_replay_buffer, batch_size)
+
+        # if src_replay_buffer.size < batch_size or tar_replay_buffer.size < batch_size:
+        #     return
+        
+        if self.upsample_src and self.total_it >= self.start_gate_src_sample:
+            src_sample_size = int(batch_size/(1-self.config['filter_percent'])/self.config['downsample_src'])
+            src_state, src_action, src_next_state, src_reward, src_not_done = src_replay_buffer.sample(src_sample_size)
+        else:
+            src_state, src_action, src_next_state, src_reward, src_not_done = src_replay_buffer.sample(batch_size)
+        
+        tar_state, tar_action, tar_next_state, tar_reward, tar_not_done = tar_replay_buffer.sample(batch_size) # [batch_size, state_dim]
+
+        
+        if self.total_it >= self.start_gate_src_sample:
+            ## output: [batch_size, 1]
+            if self.config['use_sample_level']:
+                dynamics_gap_src = self.dynamics_model.estimate_dynamics_gap_sample_level(src_state, src_action, src_next_state) # [batch_size]
+            else:
+                if self.config['dynamics_gap_reward_scale'] != 0:
+                    dynamics_gap = self.dynamics_model.estimate_dynamics_gap(torch.cat([src_state, tar_state], 0), torch.cat([src_action, tar_action], 0), n_samples=self.config['n_samples']) # [batch_size]
+                    dynamics_gap_src = dynamics_gap[:src_state.shape[0]]
+                    dynamics_gap_tar = dynamics_gap[src_state.shape[0]:]
+                else:
+                    dynamics_gap_src = self.dynamics_model.estimate_dynamics_gap(src_state, src_action, n_samples=self.config['n_samples']) # [batch_size]
+            
+            threshold = torch.quantile(dynamics_gap_src, self.config['filter_percent']) # [1]
+            mask = dynamics_gap_src < threshold # [batch_size]
+            normalized_gap = (dynamics_gap_src - dynamics_gap_src.max()) / (dynamics_gap_src.max() - dynamics_gap_src.min() + 1e-8)  # ∈ [-1, 0]
+          
+            self.weight = torch.exp(self.config['beta'] * normalized_gap)
+            self.weight = self.weight.unsqueeze(1)
+                        #print(f"self.weight.shape: {self.weight.shape}")
+        else:
+            # mask = torch.ones(src_state.shape[0])
+            mask = torch.ones(src_state.shape[0], dtype=torch.bool)
+            ## [batch_size, 1]
+            self.weight = torch.ones(src_state.shape[0], 1, device=self.device)
+            #self.weight = torch.ones_like(src_state, device=self.device)
+
+        src_state, src_action, src_next_state = src_state[mask], src_action[mask], src_next_state[mask]
+        #print(f"src_state.shape: {src_state.shape}")
+        src_reward, src_not_done = src_reward[mask], src_not_done[mask]
+        self.weight = self.weight[mask]
+        #print(f"self.weight.shape: {self.weight.shape}")
+        ## concat source weight to ones vetor of size the batch size of target
+        self.weight = torch.cat([self.weight, torch.ones(tar_state.shape[0], 1, device=self.device)], 0)
+        #print(f"self.weight.shape: {self.weight.shape}")
+        self.weight = self.weight.squeeze()
+        
+        state = torch.cat([src_state, tar_state], 0)
+        action = torch.cat([src_action, tar_action], 0)
+        next_state = torch.cat([src_next_state, tar_next_state], 0)
+        reward = torch.cat([src_reward, tar_reward], 0)
+        not_done = torch.cat([src_not_done, tar_not_done], 0)
+
+
+
+
+        if self.total_it >= self.start_gate_src_sample and self.config['dynamics_gap_reward_scale'] != 0:
+            if self.config['use_sample_level']:
+                self.dynamics_gap = self.dynamics_model.estimate_dynamics_gap(state, action, n_samples=self.config['n_samples'])
+            else:
+                dynamics_gap_src_masked = dynamics_gap_src[mask] # [tar_batch_size]
+                self.dynamics_gap = torch.cat([dynamics_gap_src_masked, dynamics_gap_tar], 0) # [src_batch_size_masked + tar_batch_size]
+
+        
+        # print(f"before dynamics gap reward, the shape of state is {state.shape}")
+        # print(f"before dynamics gap reward, the shape of action is {action.shape}")
+        # print(f"before dynamics gap reward, the shape of reward is {reward.shape}")
+        # print(f"before dynamics gap reward, the shape of next_state is {next_state.shape}")
+        # print(f"before dynamics gap reward, the shape of not_done is {not_done.shape}")
+        # if self.config['dynamics_gap_reward_scale'] != 0:
+        #     self.dynamics_gap = self.dynamics_model.estimate_dynamics_gap(state, action, n_samples=self.config['n_samples']) # [src_batch_size + tar_batch_size]
+        #     #print(f"The dynamics_gap_region_level is {self.dynamics_gap_region_level}")
+        
+        # print(f"after dynamics gap reward, the shape of state is {state.shape}")
+        # print(f"after dynamics gap reward, the shape of action is {action.shape}")
+        # print(f"after dynamics gap reward, the shape of reward is {reward.shape}")
+        # print(f"after dynamics gap reward, the shape of next_state is {next_state.shape}")
+        # print(f"after dynamics gap reward, the shape of not_done is {not_done.shape}")
+
+
+        q_loss_step = self.update_q_functions(state, action, reward, next_state, not_done, writer)
+
+
+        self.q_optimizer.zero_grad()
+        q_loss_step.backward()
+        self.q_optimizer.step()
+
+        self.update_target()
+
+        # update policy and temperature parameter
+        for p in self.q_funcs.parameters():
+            p.requires_grad = False
+
+        state = torch.cat([src_state, tar_state], 0)
+        pi_loss_step, a_loss_step = self.update_policy_and_temp(state, src_state, src_action)
+        self.policy_optimizer.zero_grad()
+        pi_loss_step.backward()
+        self.policy_optimizer.step()
+
+        if self.config['temperature_opt']:
+            self.temp_optimizer.zero_grad()
+            a_loss_step.backward()
+            self.temp_optimizer.step()
+
+        for p in self.q_funcs.parameters():
+            p.requires_grad = True
+
+    @property
+    def alpha(self):
+        return self.log_alpha.exp()
+
+    def save(self, filename):
+        torch.save(self.q_funcs.state_dict(), filename + "_critic")
+        torch.save(self.q_optimizer.state_dict(), filename + "_critic_optimizer")
+        torch.save(self.policy.state_dict(), filename + "_actor")
+        torch.save(self.policy_optimizer.state_dict(), filename + "_actor_optimizer")
+        torch.save(self.total_it, filename + "_step")
+        self.dynamics_model.save_source(filename + "_dynamics")  # Save source model
+
+        # Always save the config file
+        with open(filename + "_config.json", 'w') as f:
+            json.dump(self.config, f, indent=4)
+
+
+    def load(self, filename):
+        # Checkpoint existence
+        required_files = [
+            "_critic", "_critic_optimizer",
+            "_actor", "_actor_optimizer",
+            "_step", "_dynamics_adapt",
+            "_config.json"
+        ]
+        for suffix in required_files:
+            path = filename + suffix
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"Missing checkpoint file: {path}")
+
+        # Load components
+        self.q_funcs.load_state_dict(torch.load(filename + "_critic"))
+        self.q_optimizer.load_state_dict(torch.load(filename + "_critic_optimizer"))
+        self.policy.load_state_dict(torch.load(filename + "_actor"))
+        self.policy_optimizer.load_state_dict(torch.load(filename + "_actor_optimizer"))
+        self.total_it = torch.load(filename + "_step")
+        self.dynamics_model.load_adaptation(filename + "_dynamics_adapt")
+
+        # Load and verify config
+        with open(filename + "_config.json", 'r') as f:
+            saved_config = json.load(f)
+        assert saved_config == self.config, f"Mismatch in saved and current config!"
+
+
+
+        
+

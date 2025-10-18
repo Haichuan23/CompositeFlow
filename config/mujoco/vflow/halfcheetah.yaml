@@ -1,0 +1,61 @@
+ac_gradient_clip: 100
+alpha: 0.2
+batch_size: 128 
+actor_lr: 0.0003
+critic_lr: 0.0003
+gamma: 0.99
+max_epochs_since_update_decay_interval: 150000.0
+
+state_dim: 17
+action_dim: 3
+hidden_sizes: 256
+max_action: 1
+
+temperature_opt: False
+use_sample_level: False
+
+tau: 0.005
+update_interval: 2
+expl_noise: 0.2
+
+eval_episode: 10
+eval_freq: 10000
+start_steps: 5000
+max_step: 1000000
+tar_env_interact_freq: 10
+
+device: cuda
+
+weight: 2.5
+
+save_freq: 5000
+
+# Flow Matching
+source_flow_steps: 11
+adaptation_flow_steps: 11
+flow_matching_sigma: 0  
+flow_matching_adaptation_sigma: 0
+flow_matching_hidden_dim: 512
+flow_matching_source_num_layers: 6
+flow_matching_adaptation_num_layers: 6
+flow_matching_activation: relu
+flow_matching_lr: 0.0003
+flow_matching_batch_size: 1024
+flow_matching_holdout_ratio: 0.1
+validation_start_epoch_source: 20
+validation_start_epoch_adaptation: 20
+ema_decay: 0.995
+ema_update_steps: 20
+use_ema: False
+use_weight: False
+## Need to change these back to 300 and 5
+
+flow_matching_training_max_epochs_source: 500
+flow_matching_training_max_epochs_adaptation: 200
+max_epochs_since_update: 20
+dynamics_train_freq: 5000
+upsample_src: False
+
+# Weight
+filter_percent: 0.7
+start_gate_src_sample: 100000.0

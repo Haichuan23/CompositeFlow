@@ -1,0 +1,36 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# VSCode settings
+.vscode/
+
+# WandB logs
+wandb/
+wandb_backup/
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# System files
+.DS_Store
+
+# Experiment outputs and logs
+runs/
+outputs/
+*.out
+*.err
+*.log
+*.txt
+*.csv
+*.json
+*.slurm
+
+# Model checkpoints
+*.pt
+*.pth
+*.png
+
+# Training and job logs
+training_output/
+slurm_logs/
