@@ -22,6 +22,7 @@ conda activate compositeflow
 
 # Install dependencies
 conda env update --file environment.yml --prune
+```
 
 ## 🚀 Run Training (CompositeFlow)
 
@@ -39,6 +40,7 @@ python train.py \
     --dynamics_gap_reward_scale 0.1 \
     --filter_percent 0.8 \
     --dir training_output/seed_0
+```
 
 ## 🧩 Training (Baselines)
 
@@ -53,6 +55,7 @@ python train.py \
     --shift_level 5.0 \
     --seed 0 \
     --dir training_output/bc_sac_seed_0
+```
 
 ## Licences
 
