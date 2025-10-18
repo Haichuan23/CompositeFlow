@@ -78,7 +78,6 @@ python train.py \
     --checkpoint_freq 5000 \
     --dynamics_gap_reward_scale ${DYNAMICS_GAP} \
     --filter_percent ${FILTER} \
-    --save-model \
     --dir ${OUTPUT_DIR} \
 
 echo "Job finished for task ID ${SLURM_ARRAY_TASK_ID}"

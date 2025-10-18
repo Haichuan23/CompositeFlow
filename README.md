@@ -7,10 +7,52 @@
 </p>
 
 ![A brief overview of the Composite Flow Framework.](./imgs/ODRLbenchmark.png)
-# 🔥 [Composite Flow Matching for Reinforcement Learning with Shifted-Dynamics Data](https://arxiv.org/abs/2505.23062)
+🔥 [Composite Flow Matching for Reinforcement Learning with Shifted-Dynamics Data](https://arxiv.org/abs/2505.23062)
 
 CompositeFlow adapts RL agents to dynamics shift by composing flow matching models for source and target MDPs and guiding exploration with learned dynamics gaps.
 
+## 🛠️ Installation (CompositeFlow)
+
+Clone project and create environment with conda:
+
+```bash
+# Create and activate conda environment
+conda create -n compositeflow python=3.8
+conda activate compositeflow
+
+# Install dependencies
+conda env update --file environment.yml --prune
+
+## 🚀 Run Training (CompositeFlow)
+
+After setting up the environment, you can launch a single training run with:
+
+```bash
+python train.py \
+    --policy vflow \
+    --env hopper-friction \
+    --mode 1 \
+    --srctype medium-replay \
+    --shift_level 5.0 \
+    --seed 0 \
+    --n_samples 30 \
+    --dynamics_gap_reward_scale 0.1 \
+    --filter_percent 0.8 \
+    --dir training_output/seed_0
+
+## 🧩 Training (Baselines)
+
+To train a single baseline agent (e.g., BC-SAC) on Hopper-Friction:
+
+```bash
+python train.py \
+    --policy bc_sac \
+    --env hopper-friction \
+    --mode 1 \
+    --srctype medium-replay \
+    --shift_level 5.0 \
+    --seed 0 \
+    --dir training_output/bc_sac_seed_0
 
 ## Licences
 

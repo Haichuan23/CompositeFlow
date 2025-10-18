@@ -102,12 +102,10 @@ if __name__ == "__main__":
     parser.add_argument('--shift_level', default=0.5, help='Scale/type of dynamics shift')
     parser.add_argument('--mode', default=0, type=int, help='Training mode: 0: online-online, 1: offline-online, 2: online-offline, 3: offline-offline')
     parser.add_argument("--seed", default=0, type=int, help="Random seed")
-    parser.add_argument("--save-model", action="store_true", help="Save model checkpoints")
     parser.add_argument('--tar_env_interact_interval', default=10, type=int, help='Interaction frequency with target env (Modes 0, 1)')
     parser.add_argument('--max_step', default=int(4e5), type=int, help="Max *gradient steps*")
     # parser.add_argument('--max_step', default=int(4e5), type=int, help="Max *gradient steps*")
     parser.add_argument('--eval_freq', default=int(5e3), type=int, help="Evaluation frequency (gradient steps)")
-    parser.add_argument('--checkpoint_freq', default=int(20e3), type=int, help="Checkpoint frequency (gradient steps)")
     parser.add_argument('--params', default=None, help='JSON string for overriding config parameters')
     parser.add_argument('--load_model', default=None, help='Path prefix to load pre-trained model checkpoint') # Clarified purpose
     parser.add_argument('--resume_run_dir', default=None, help='Directory of a previous run to resume (loads latest checkpoint)') # Option to resume easily
@@ -284,7 +282,7 @@ if __name__ == "__main__":
         'temperature_opt', 'actor_lr', 'critic_lr', 'alpha', 'tar_cql', 'cql_alpha', 'cql_max_target_backup',
         'cql_n_actions', 'cql_temp', 'cql_clip_diff_min', 'cql_clip_diff_max', 'cql_importance_sample',
         'backup_entropy', 'cql_lagrange', 'dynamics_gap_reward_scale', 'n_samples', 'downsample_src',
-        'upsample_src', 'use_sample_level', 'weight', 'eval_freq', 'checkpoint_freq',
+        'upsample_src', 'use_sample_level', 'weight', 'eval_freq', 
     ]
     for key in override_keys:
         if hasattr(args, key) and getattr(args, key) is not None:
@@ -513,7 +511,6 @@ if __name__ == "__main__":
     # --- Training Loop ---
     max_steps = args.max_step
     eval_freq = int(config['eval_freq'])
-    checkpoint_freq = int(config['checkpoint_freq'])
     batch_size = int(config['batch_size'])
 
     print(f"Starting training loop from step {start_step} up to {max_steps}")
