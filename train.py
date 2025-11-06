@@ -136,7 +136,7 @@ if __name__ == "__main__":
     parser.add_argument('--upsample_src', action='store_true', help='Upsample source data during training')
     parser.add_argument('--use_sample_level', action='store_true', help='Use sample-level dynamics gap')
     parser.add_argument('--weight', default=2.5, type=float, help='Weight for BC loss in policy update (if applicable)') # Clarified purpose
-
+    parser.add_argument('--eta', default=0.05, type=float, help='Regularization parameter for OT plan')
     ## Extreme Target Shift 
     parser.add_argument("--extreme_shift", action = "store_true", help = "If set, use the extreme XML variants (broken limbs, etc.) in call_mujoco_env")
 
@@ -304,6 +304,7 @@ if __name__ == "__main__":
         'hidden_sizes': config.get('hidden_sizes', 256), # Example, policy might need this
         'batch_size': config.get('batch_size', 256),
         'update_interval': config.get('update_interval', 1), # For SAC style updates per step
+        'eta': args.eta
     })
 
     # --- Create Output Directory and Logger ---

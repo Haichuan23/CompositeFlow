@@ -69,11 +69,10 @@ This codebase has been adapted from [ORDL](https://arxiv.org/html/2410.20750v1).
 Please consider citing us if you find our work useful!
 
 ```
-@article{kong2025composite,
-  title={Composite Flow Matching for Reinforcement Learning with Shifted-Dynamics Data},
-  author={Kong, Lingkai and Wang, Haichuan and Wang, Tonghan and Xiong, Guojun and Tambe, Milind},
-  journal={arXiv preprint arXiv:2505.23062},
-  year={2025},
-  url={https://arxiv.org/abs/2505.23062}
+@inproceedings{kong2025composite,
+  title     = {Composite Flow Matching for Reinforcement Learning with Shifted-Dynamics Data},
+  author    = {Kong, Lingkai and Wang, Haichuan and Wang, Tonghan and Xiong, Guojun and Tambe, Milind},
+  booktitle = {Proceedings of the 39th Annual Conference on Neural Information Processing Systems (NeurIPS)},
+  year      = {2025}
 }
 ```

@@ -76,25 +76,77 @@ class OTPlanSampler:
         p : numpy array, shape (bs, bs)
             represents the OT plan between minibatches
         """
-        a, b = pot.unif(x0.shape[0]), pot.unif(x1.shape[0])
-        if x0.dim() > 2:
-            x0 = x0.reshape(x0.shape[0], -1)
-        if x1.dim() > 2:
-            x1 = x1.reshape(x1.shape[0], -1)
-        M = torch.cdist(x0, x1) ** 2
+            a, b = pot.unif(x0.shape[0]), pot.unif(x1.shape[0])
+            if x0.dim() > 2:
+                x0 = x0.reshape(x0.shape[0], -1)
+            if x1.dim() > 2:
+                x1 = x1.reshape(x1.shape[0], -1)
+            M = torch.cdist(x0, x1) ** 2
+            if self.normalize_cost:
+                M = M / M.max()  # should not be normalized when using minibatches
+            p = self.ot_fn(a, b, M.detach().cpu().numpy())
+            if not np.all(np.isfinite(p)):
+                print("ERROR: p is not finite")
+                print(p)
+                print("Cost mean, max", M.mean(), M.max())
+                print(x0, x1)
+            if np.abs(p.sum()) < 1e-8:
+                if self.warn:
+                    warnings.warn("Numerical errors in OT plan, reverting to uniform plan.")
+                p = np.ones_like(p) / p.size
+            return p
+        
+    def get_map_condition_version(
+        self,
+        x0: torch.Tensor, x1: torch.Tensor,
+        s0: torch.Tensor, s1: torch.Tensor,
+        a0: torch.Tensor, a1: torch.Tensor,
+        eta: float = 0.0,
+    ) -> np.ndarray:
+        """
+        Compute OT plan with cost = ||x0 - x1||^2 + lam * ( ||s0 - s1||^2 + ||a0 - a1||^2 ).
+        """
+        bs0, bs1 = x0.shape[0], x1.shape[0]
+        # uniform marginals
+        a, b = pot.unif(bs0), pot.unif(bs1)
+
+        # flatten features if needed
+        def _flatten(t):
+            return t.reshape(t.shape[0], -1) if t.dim() > 2 else t
+
+        x0f, x1f = _flatten(x0), _flatten(x1)
+        s0f, s1f = _flatten(s0), _flatten(s1)
+        a0f, a1f = _flatten(a0), _flatten(a1)
+
+        # pairwise L2 distances (not squared)
+        Mx = torch.cdist(x0f, x1f, p=2) ** 2              # [bs0, bs1]
+        Ms = torch.cdist(s0f, s1f, p=2) ** 2              # [bs0, bs1]
+        Ma = torch.cdist(a0f, a1f, p=2) ** 2              # [bs0, bs1]
+
+        M = Mx + eta * (Ms + Ma)
+
         if self.normalize_cost:
-            M = M / M.max()  # should not be normalized when using minibatches
-        p = self.ot_fn(a, b, M.detach().cpu().numpy())
-        if not np.all(np.isfinite(p)):
-            print("ERROR: p is not finite")
-            print(p)
-            print("Cost mean, max", M.mean(), M.max())
-            print(x0, x1)
-        if np.abs(p.sum()) < 1e-8:
+            maxv = M.max()
+            if torch.isfinite(maxv) and maxv > 0:
+                M = M / maxv
+
+        P = self.ot_fn(a, b, M.detach().cpu().numpy())
+
+        if not np.all(np.isfinite(P)):
+            print("ERROR: OT plan contains non-finite values.")
+            print("Cost mean, max:", float(M.mean()), float(M.max()))
             if self.warn:
-                warnings.warn("Numerical errors in OT plan, reverting to uniform plan.")
-            p = np.ones_like(p) / p.size
-        return p
+                warnings.warn("Non-finite OT plan; reverting to uniform.")
+            P = np.ones_like(P) / P.size
+
+        if abs(P.sum()) < 1e-12:
+            if self.warn:
+                warnings.warn("Degenerate OT plan; reverting to uniform.")
+            P = np.ones_like(P) / P.size
+
+        return P
+
+
 
     def sample_map(self, pi, batch_size, replace=True):
         r"""Draw source and target samples from pi  $(x,z) \sim \pi$
@@ -143,8 +195,45 @@ class OTPlanSampler:
         pi = self.get_map(x0, x1)
         if batch_size is None:
             batch_size = x0.shape[0]
-        i, j = self.sample_map(pi, x0.shape[0], replace=replace)
+        i, j = self.sample_map(pi, batch_size, replace=replace)
         return x0[i], x1[j]
+
+    def sample_plan_condition_version(self, x0, x1, s0, s1, a0, a1, replace=True, batch_size=None):
+        r"""Compute the OT plan $\pi$ (wrt squared Euclidean cost) between a source and a target
+        minibatch and draw source and target samples from pi $(x,z) \sim \pi$
+
+        Parameters
+        ----------
+        x0 : Tensor, shape (bs, *dim)
+            represents the source minibatch
+        x1 : Tensor, shape (bs, *dim)
+            represents the source minibatch
+        s0 : Tensor, shape (bs, *dim)
+            represents the source label minibatch
+        s1 : Tensor, shape (bs, *dim)
+            represents the target label minibatch
+        a0 : Tensor, shape (bs, *dim)
+            represents the source action minibatch
+        a1 : Tensor, shape (bs, *dim)
+            represents the target action minibatch
+        replace : bool
+            represents sampling or without replacement from the OT plan
+
+        Returns
+        -------
+        x0[i] : Tensor, shape (bs, *dim)
+            represents the source minibatch drawn from $\pi$
+        x1[j] : Tensor, shape (bs, *dim)
+            represents the source minibatch drawn from $\pi$
+        """
+        pi = self.get_map_condition_version(x0, x1, s0, s1, a0, a1)
+        if batch_size is None:
+            batch_size = x0.shape[0]
+        i, j = self.sample_map(pi, batch_size, replace=replace)
+        return x0[i], x1[j]
+
+
+
 
     def sample_plan_with_labels(self, x0, x1, y0=None, y1=None, replace=True, batch_size=None):
         r"""Compute the OT plan $\pi$ (wrt squared Euclidean cost) between a source and a target

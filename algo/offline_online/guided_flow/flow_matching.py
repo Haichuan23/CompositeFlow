@@ -68,8 +68,7 @@ class FlowMatching:
         ## chekcpoint path = source_checkpoint_path + config['env']
 
         filename = f"{self.config['task_name']}_source_model_state.pth"
-        # 使用 os.path.join 来确保跨平台兼容性
-        source_checkpoint_path = os.path.join(".", filename) # "." 代表当前目录
+        source_checkpoint_path = os.path.join(".", filename)
 
 
         self.CFM_source = get_cfm('cfm', config['flow_matching_sigma'])
@@ -633,7 +632,7 @@ class FlowMatching:
         self.source_model.eval()
 
 
-    def train_adaptation_flow_matching(self, tar_replay_buffer, holdout_ratio=0.1, n_epochs=100, batch_size=512, lr=1e-4):
+    def train_adaptation_flow_matching(self, tar_replay_buffer, holdout_ratio=0.1, n_epochs=100, batch_size=512, lr=1e-4, eta=0.0):
         print("Starting adaptation model training...")
         # Reinitialize the adaptation model FRESH for each call
         print("Re-initializing adaptation model.")
@@ -734,6 +733,8 @@ class FlowMatching:
 
                 # Normalize source prediction using ADAPTATION normalizers (start point for adaptation flow)
                 ns_src_pred_norm_adapt = self.normalize(ns_src_pred, self.mean_adapt_ns, self.std_adapt_ns)
+                
+                s_b_norm_adapt, a_b_norm_adapt = self.normalize(s_b, self.mean_adapt_sa, self.std_adapt_sa, a_b)
 
                 # Normalize target next state using ADAPTATION normalizers (end point for adaptation flow)
                 ns_b_norm_adapt = self.normalize(ns_b, self.mean_adapt_ns, self.std_adapt_ns)
@@ -743,7 +744,7 @@ class FlowMatching:
                 ### compute the running time needed for sampling the location and conditional flow
                 sample_time = time.time()
                 ### this is the time for the adaptation flow
-                t, ns_t, ut = self.CFM_adaptation.sample_location_and_conditional_flow(ns_src_pred_norm_adapt, ns_b_norm_adapt, t)
+                t, ns_t, ut = self.CFM_adaptation.sample_location_and_conditional_flow_condtion_version(ns_src_pred_norm_adapt, ns_b_norm_adapt, s_b_norm_adapt, s_b_norm_adapt, a_b_norm_adapt, a_b_norm_adapt, t)
                 sample_time = time.time() - sample_time
                 #print(f"Time needed for sampling the location and conditional flow: {sample_time:.2f}s")
 
